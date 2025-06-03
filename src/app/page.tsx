@@ -519,7 +519,7 @@ export default function CashFlowApp() {
                 </div>
               </div>
               <div className="bg-orange-50 p-4 rounded-lg">
-                <p className="text-sm text-gray-600 mb-1">Duguju mi</p>
+                <p className="text-sm text-gray-600 mb-1">Potraživanja</p>
                 <div className="text-2xl font-bold text-orange-600">
                   {(() => {
                     const activeLoans = loans.filter(l => l.isActive);

@@ -1,10 +1,10 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { Plus, Minus, DollarSign, Clock, Calendar, HandCoins, ArrowLeft, Download, Upload, Filter } from 'lucide-react';
+import { Plus, Minus, DollarSign, Clock, Calendar, HandCoins, ArrowLeft, Download, Upload, Filter, X } from 'lucide-react';
 
 // TypeScript tipovi
-type TransactionType = 'add' | 'subtract' | 'loan_given' | 'loan_returned' | 'initial';
+type TransactionType = 'add' | 'subtract' | 'loan_given' | 'loan_returned' | 'loan_partial' | 'initial';
 
 type Transaction = {
   id: number;
@@ -14,12 +14,15 @@ type Transaction = {
   description: string;
   date: string;
   timestamp: string;
+  loanId?: number; // ID pozajmice za parcijalna vraćanja
 };
 
 type Loan = {
   id: number;
-  amountRsd: number;
-  amountEur: number;
+  originalAmountRsd: number; // Originalni iznos
+  originalAmountEur: number;
+  currentAmountRsd: number;  // Trenutni iznos (posle rata)
+  currentAmountEur: number;
   description: string;
   date: string;
   timestamp: string;
@@ -40,6 +43,12 @@ export default function CashFlowApp() {
   const [selectedMonth, setSelectedMonth] = useState<string>(new Date().toISOString().slice(0, 7));
   const [isInitialized, setIsInitialized] = useState<boolean>(false);
   const [isLoaded, setIsLoaded] = useState<boolean>(false);
+  
+  // Modal state za rate
+  const [showPartialModal, setShowPartialModal] = useState<boolean>(false);
+  const [selectedLoan, setSelectedLoan] = useState<Loan | null>(null);
+  const [partialAmountRsd, setPartialAmountRsd] = useState<string>('');
+  const [partialAmountEur, setPartialAmountEur] = useState<string>('');
 
   // Učitaj podatke iz localStorage kad se komponenta učita
   useEffect(() => {
@@ -50,10 +59,20 @@ export default function CashFlowApp() {
         setBalance(data.balance || 0);
         setBalanceEur(data.balanceEur || 0);
         setTransactions(data.transactions || []);
-        setLoans(data.loans || []);
+        
+        // Migracija starih pozajmica koje nemaju currentAmount polja
+        const migratedLoans = (data.loans || []).map((loan: any) => ({
+          ...loan,
+          originalAmountRsd: loan.originalAmountRsd || loan.amountRsd || 0,
+          originalAmountEur: loan.originalAmountEur || loan.amountEur || 0,
+          currentAmountRsd: loan.currentAmountRsd !== undefined ? loan.currentAmountRsd : (loan.amountRsd || 0),
+          currentAmountEur: loan.currentAmountEur !== undefined ? loan.currentAmountEur : (loan.amountEur || 0),
+        }));
+        
+        setLoans(migratedLoans);
         setIsInitialized(data.isInitialized || false);
-      } catch (error) {
-        console.error('Greška pri učitavanju podataka:', error);
+      } catch {
+        // Ignoriši greške pri parsiranju
       }
     }
     setIsLoaded(true);
@@ -119,8 +138,10 @@ export default function CashFlowApp() {
       setBalanceEur(prev => prev - valueEur);
       const newLoan: Loan = {
         id: Date.now(),
-        amountRsd: valueRsd,
-        amountEur: valueEur,
+        originalAmountRsd: valueRsd,
+        originalAmountEur: valueEur,
+        currentAmountRsd: valueRsd,
+        currentAmountEur: valueEur,
         description: description.trim(),
         date: transactionDate,
         timestamp: new Date(transactionDate).toLocaleDateString('sr-RS'),
@@ -139,8 +160,8 @@ export default function CashFlowApp() {
     const loan = loans.find(l => l.id === loanId);
     if (!loan) return;
 
-    setBalance(prev => prev + loan.amountRsd);
-    setBalanceEur(prev => prev + loan.amountEur);
+    setBalance(prev => prev + loan.currentAmountRsd);
+    setBalanceEur(prev => prev + loan.currentAmountEur);
     
     setLoans(prev => prev.map(l => 
       l.id === loanId ? { ...l, isActive: false } : l
@@ -149,13 +170,78 @@ export default function CashFlowApp() {
     const returnTransaction: Transaction = {
       id: Date.now(),
       type: 'loan_returned',
-      amountRsd: loan.amountRsd,
-      amountEur: loan.amountEur,
+      amountRsd: loan.currentAmountRsd,
+      amountEur: loan.currentAmountEur,
       description: `Vraćena pozajmica: ${loan.description}`,
       date: new Date().toISOString().split('T')[0],
-      timestamp: new Date().toLocaleDateString('sr-RS')
+      timestamp: new Date().toLocaleDateString('sr-RS'),
+      loanId: loanId
     };
     setTransactions(prev => [returnTransaction, ...prev]);
+  };
+
+  const openPartialModal = (loan: Loan) => {
+    setSelectedLoan(loan);
+    setPartialAmountRsd('');
+    setPartialAmountEur('');
+    setShowPartialModal(true);
+  };
+
+  const closePartialModal = () => {
+    setShowPartialModal(false);
+    setSelectedLoan(null);
+    setPartialAmountRsd('');
+    setPartialAmountEur('');
+  };
+
+  const processPartialReturn = () => {
+    if (!selectedLoan) return;
+    
+    const partialRsd = parseFloat(partialAmountRsd) || 0;
+    const partialEur = parseFloat(partialAmountEur) || 0;
+    
+    if (!partialRsd && !partialEur) return;
+    
+    // Proveri da ne vraća više nego što duguje
+    if (partialRsd > selectedLoan.currentAmountRsd || partialEur > selectedLoan.currentAmountEur) {
+      alert('Ne možete vratiti više nego što dugujete!');
+      return;
+    }
+
+    // Dodaj novac u sef
+    setBalance(prev => prev + partialRsd);
+    setBalanceEur(prev => prev + partialEur);
+
+    // Smanji dugovanje
+    const newCurrentRsd = selectedLoan.currentAmountRsd - partialRsd;
+    const newCurrentEur = selectedLoan.currentAmountEur - partialEur;
+    
+    // Ako je kompletno vraćeno, deaktiviraj pozajmicu
+    const isFullyReturned = newCurrentRsd === 0 && newCurrentEur === 0;
+    
+    setLoans(prev => prev.map(l => 
+      l.id === selectedLoan.id ? { 
+        ...l, 
+        currentAmountRsd: newCurrentRsd,
+        currentAmountEur: newCurrentEur,
+        isActive: !isFullyReturned 
+      } : l
+    ));
+
+    // Kreiraj transakciju
+    const partialTransaction: Transaction = {
+      id: Date.now(),
+      type: isFullyReturned ? 'loan_returned' : 'loan_partial',
+      amountRsd: partialRsd,
+      amountEur: partialEur,
+      description: `${isFullyReturned ? 'Završeno vraćanje' : 'Delimično vraćanje'}: ${selectedLoan.description}`,
+      date: new Date().toISOString().split('T')[0],
+      timestamp: new Date().toLocaleDateString('sr-RS'),
+      loanId: selectedLoan.id
+    };
+    
+    setTransactions(prev => [partialTransaction, ...prev]);
+    closePartialModal();
   };
 
   const exportData = () => {
@@ -166,7 +252,7 @@ export default function CashFlowApp() {
       loans,
       isInitialized,
       exportDate: new Date().toISOString(),
-      version: "1.0"
+      version: "2.0"
     };
     
     const dataStr = JSON.stringify(dataToExport, null, 2);
@@ -193,17 +279,26 @@ export default function CashFlowApp() {
           setBalance(importedData.balance || 0);
           setBalanceEur(importedData.balanceEur || 0);
           setTransactions(importedData.transactions || []);
-          setLoans(importedData.loans || []);
+          
+          // Migracija pozajmica pri importu
+          const migratedLoans = (importedData.loans || []).map((loan: any) => ({
+            ...loan,
+            originalAmountRsd: loan.originalAmountRsd || loan.amountRsd || 0,
+            originalAmountEur: loan.originalAmountEur || loan.amountEur || 0,
+            currentAmountRsd: loan.currentAmountRsd !== undefined ? loan.currentAmountRsd : (loan.amountRsd || 0),
+            currentAmountEur: loan.currentAmountEur !== undefined ? loan.currentAmountEur : (loan.amountEur || 0),
+          }));
+          
+          setLoans(migratedLoans);
           setIsInitialized(importedData.isInitialized || false);
           
           alert(`Podaci su uspešno učitani! Backup iz: ${new Date(importedData.exportDate).toLocaleDateString('sr-RS')}`);
         } else {
           alert('Nevaljan backup fajl!');
         }
-      } catch (error) {
-  console.error('Import error:', error);
-  alert('Greška pri učitavanju fajla!');
-}
+      } catch {
+        alert('Greška pri učitavanju fajla!');
+      }
     };
     reader.readAsText(file);
     event.target.value = '';
@@ -229,22 +324,35 @@ export default function CashFlowApp() {
     }).format(amount);
   };
 
-  const formatAmount = (transaction: Transaction | Loan): string => {
-    const parts: string[] = [];
+  const formatAmount = (transaction: Transaction | Loan, useCurrentAmount = false): string => {
+    let rsdAmount, eurAmount;
     
-    if (transaction.amountRsd && transaction.amountRsd > 0) {
-      parts.push(formatCurrency(transaction.amountRsd));
+    if ('currentAmountRsd' in transaction && useCurrentAmount) {
+      rsdAmount = transaction.currentAmountRsd;
+      eurAmount = transaction.currentAmountEur;
+    } else if ('amountRsd' in transaction) {
+      rsdAmount = transaction.amountRsd;
+      eurAmount = transaction.amountEur;
+    } else {
+      rsdAmount = transaction.currentAmountRsd;
+      eurAmount = transaction.currentAmountEur;
     }
     
-    if (transaction.amountEur && transaction.amountEur > 0) {
+    const parts: string[] = [];
+    
+    if (rsdAmount && rsdAmount > 0) {
+      parts.push(formatCurrency(rsdAmount));
+    }
+    
+    if (eurAmount && eurAmount > 0) {
       const eurFormatted = new Intl.NumberFormat('sr-RS', {
         style: 'currency',
         currency: 'EUR'
-      }).format(transaction.amountEur);
+      }).format(eurAmount);
       parts.push(eurFormatted);
     }
     
-    return parts.join(' + ');
+    return parts.length > 0 ? parts.join(' + ') : formatCurrency(0);
   };
 
   const resetApp = () => {
@@ -363,15 +471,15 @@ export default function CashFlowApp() {
               </div>
             </div>
             
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
               <div className="bg-blue-50 p-4 rounded-lg">
-                <p className="text-sm text-gray-600 mb-1">Dinari</p>
+                <p className="text-sm text-gray-600 mb-1">Dinari u sefu</p>
                 <div className={`text-2xl font-bold ${balance >= 0 ? 'text-green-600' : 'text-red-600'}`}>
                   {formatCurrency(balance)}
                 </div>
               </div>
               <div className="bg-yellow-50 p-4 rounded-lg">
-                <p className="text-sm text-gray-600 mb-1">Evri</p>
+                <p className="text-sm text-gray-600 mb-1">Evri u sefu</p>
                 <div className={`text-2xl font-bold ${balanceEur >= 0 ? 'text-green-600' : 'text-red-600'}`}>
                   {new Intl.NumberFormat('sr-RS', {
                     style: 'currency',
@@ -379,15 +487,31 @@ export default function CashFlowApp() {
                   }).format(balanceEur)}
                 </div>
               </div>
-            </div>
-
-            {loans.filter(l => l.isActive).length > 0 && (
-              <div className="mt-4 p-3 bg-orange-50 rounded-lg">
-                <p className="text-sm text-orange-700">
-                  Aktivne pozajmice: {loans.filter(l => l.isActive).length}
-                </p>
+              <div className="bg-orange-50 p-4 rounded-lg">
+                <p className="text-sm text-gray-600 mb-1">Duguju mi</p>
+                <div className="text-2xl font-bold text-orange-600">
+                  {(() => {
+                    const activeLoans = loans.filter(l => l.isActive);
+                    const totalRsd = activeLoans.reduce((sum, loan) => sum + loan.currentAmountRsd, 0);
+                    const totalEur = activeLoans.reduce((sum, loan) => sum + loan.currentAmountEur, 0);
+                    
+                    const parts = [];
+                    if (totalRsd > 0) parts.push(formatCurrency(totalRsd));
+                    if (totalEur > 0) parts.push(new Intl.NumberFormat('sr-RS', {
+                      style: 'currency',
+                      currency: 'EUR'
+                    }).format(totalEur));
+                    
+                    return parts.length > 0 ? parts.join(' + ') : formatCurrency(0);
+                  })()}
+                </div>
+                {loans.filter(l => l.isActive).length > 0 && (
+                  <p className="text-xs text-orange-600 mt-1">
+                    {loans.filter(l => l.isActive).length} aktivna{loans.filter(l => l.isActive).length === 1 ? '' : 'e'} pozajmic{loans.filter(l => l.isActive).length === 1 ? 'a' : 'e'}
+                  </p>
+                )}
               </div>
-            )}
+            </div>
           </div>
         </div>
 
@@ -504,20 +628,33 @@ export default function CashFlowApp() {
                         <Calendar className="w-4 h-4" />
                         <span>{loan.timestamp}</span>
                       </div>
+                      {(loan.currentAmountRsd !== loan.originalAmountRsd || loan.currentAmountEur !== loan.originalAmountEur) && (
+                        <div className="text-xs text-orange-600 mt-1">
+                          Početno: {formatAmount(loan)} → Ostalo: {formatAmount(loan, true)}
+                        </div>
+                      )}
                     </div>
                   </div>
                   
                   <div className="flex items-center justify-between sm:justify-end gap-3 flex-shrink-0">
                     <div className="text-lg font-semibold text-orange-600">
-                      {formatAmount(loan)}
+                      {formatAmount(loan, true)}
                     </div>
-                    <button
-                      onClick={() => returnLoan(loan.id)}
-                      className="bg-green-600 hover:bg-green-700 text-white px-3 py-1 rounded-lg text-sm flex items-center gap-1 transition-colors whitespace-nowrap"
-                    >
-                      <ArrowLeft className="w-4 h-4" />
-                      Vraćeno
-                    </button>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => openPartialModal(loan)}
+                        className="bg-yellow-600 hover:bg-yellow-700 text-white px-2 py-1 rounded text-sm flex items-center gap-1 transition-colors whitespace-nowrap"
+                      >
+                        Rata
+                      </button>
+                      <button
+                        onClick={() => returnLoan(loan.id)}
+                        className="bg-green-600 hover:bg-green-700 text-white px-2 py-1 rounded text-sm flex items-center gap-1 transition-colors whitespace-nowrap"
+                      >
+                        <ArrowLeft className="w-4 h-4" />
+                        Sve
+                      </button>
+                    </div>
                   </div>
                 </div>
               ))}
@@ -569,12 +706,14 @@ export default function CashFlowApp() {
                       transaction.type === 'subtract' ? 'bg-red-100 text-red-600' :
                       transaction.type === 'loan_given' ? 'bg-orange-100 text-orange-600' :
                       transaction.type === 'loan_returned' ? 'bg-blue-100 text-blue-600' :
+                      transaction.type === 'loan_partial' ? 'bg-yellow-100 text-yellow-600' :
                       'bg-blue-100 text-blue-600'
                     }`}>
                       {transaction.type === 'add' ? <Plus className="w-5 h-5" /> :
                        transaction.type === 'subtract' ? <Minus className="w-5 h-5" /> :
                        transaction.type === 'loan_given' ? <HandCoins className="w-5 h-5" /> :
                        transaction.type === 'loan_returned' ? <ArrowLeft className="w-5 h-5" /> :
+                       transaction.type === 'loan_partial' ? <ArrowLeft className="w-5 h-5" /> :
                        <DollarSign className="w-5 h-5" />}
                     </div>
                     
@@ -588,11 +727,11 @@ export default function CashFlowApp() {
                   </div>
                   
                   <div className={`text-lg font-semibold flex-shrink-0 ${
-                    transaction.type === 'add' || transaction.type === 'loan_returned' ? 'text-green-600' :
+                    transaction.type === 'add' || transaction.type === 'loan_returned' || transaction.type === 'loan_partial' ? 'text-green-600' :
                     transaction.type === 'subtract' || transaction.type === 'loan_given' ? 'text-red-600' :
                     'text-blue-600'
                   }`}>
-                    {transaction.type === 'add' || transaction.type === 'loan_returned' ? '+' : 
+                    {transaction.type === 'add' || transaction.type === 'loan_returned' || transaction.type === 'loan_partial' ? '+' : 
                      transaction.type === 'subtract' || transaction.type === 'loan_given' ? '-' : ''}
                     {formatAmount(transaction)}
                   </div>
@@ -602,6 +741,89 @@ export default function CashFlowApp() {
           )}
         </div>
       </div>
+
+      {/* Modal za delimično vraćanje pozajmice */}
+      {showPartialModal && selectedLoan && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl shadow-xl max-w-md w-full p-6">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-lg font-semibold text-gray-800">Vratiti ratu</h3>
+              <button
+                onClick={closePartialModal}
+                className="text-gray-400 hover:text-gray-600 transition-colors"
+              >
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+            
+            <div className="mb-4">
+              <p className="text-sm text-gray-600 mb-2">Pozajmica: {selectedLoan.description}</p>
+              <p className="text-sm text-gray-600">
+                Duguje ukupno: <span className="font-medium">{formatAmount(selectedLoan, true)}</span>
+              </p>
+            </div>
+            
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Vraća - Dinari (RSD)
+                </label>
+                <input
+                  type="number"
+                  value={partialAmountRsd}
+                  onChange={(e) => setPartialAmountRsd(e.target.value)}
+                  placeholder="0.00"
+                  max={selectedLoan.currentAmountRsd}
+                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                />
+                {selectedLoan.currentAmountRsd > 0 && (
+                  <p className="text-xs text-gray-500 mt-1">
+                    Maksimalno: {formatCurrency(selectedLoan.currentAmountRsd)}
+                  </p>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Vraća - Evri (EUR)
+                </label>
+                <input
+                  type="number"
+                  value={partialAmountEur}
+                  onChange={(e) => setPartialAmountEur(e.target.value)}
+                  placeholder="0.00"
+                  max={selectedLoan.currentAmountEur}
+                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                />
+                {selectedLoan.currentAmountEur > 0 && (
+                  <p className="text-xs text-gray-500 mt-1">
+                    Maksimalno: {new Intl.NumberFormat('sr-RS', {
+                      style: 'currency',
+                      currency: 'EUR'
+                    }).format(selectedLoan.currentAmountEur)}
+                  </p>
+                )}
+              </div>
+            </div>
+            
+            <div className="flex gap-3 mt-6">
+              <button
+                onClick={closePartialModal}
+                className="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-800 font-medium py-3 px-4 rounded-lg transition-colors"
+              >
+                Otkaži
+              </button>
+              <button
+                onClick={processPartialReturn}
+                disabled={!partialAmountRsd && !partialAmountEur}
+                className="flex-1 bg-green-600 hover:bg-green-700 disabled:bg-gray-300 text-white font-medium py-3 px-4 rounded-lg transition-colors"
+              >
+                Potvrdi
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

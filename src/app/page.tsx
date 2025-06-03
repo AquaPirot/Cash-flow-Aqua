@@ -200,9 +200,10 @@ export default function CashFlowApp() {
         } else {
           alert('Nevaljan backup fajl!');
         }
-      } catch {
+      } catch (error) {
+  console.error('Import error:', error);
   alert('Greška pri učitavanju fajla!');
- } 
+}
     };
     reader.readAsText(file);
     event.target.value = '';

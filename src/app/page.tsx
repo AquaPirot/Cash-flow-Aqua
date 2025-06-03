@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { Plus, Minus, DollarSign, Clock, Calendar, HandCoins, ArrowLeft, Download, Upload, Filter, X } from 'lucide-react';
+import { Plus, Minus, DollarSign, Clock, Calendar, HandCoins, ArrowLeft, Download, Upload, Filter, X, Trash2 } from 'lucide-react';
 
 // TypeScript tipovi
 type TransactionType = 'add' | 'subtract' | 'loan_given' | 'loan_returned' | 'loan_partial' | 'initial';
@@ -355,18 +355,56 @@ export default function CashFlowApp() {
     return parts.length > 0 ? parts.join(' + ') : formatCurrency(0);
   };
 
-  const resetApp = () => {
-    setBalance(0);
-    setBalanceEur(0);
-    setTransactions([]);
-    setLoans([]);
-    setIsInitialized(false);
-    setInitialBalance('');
-    setInitialBalanceEur('');
-    setAmount('');
-    setAmountEur('');
-    setDescription('');
-    localStorage.removeItem('cashFlowData');
+  const deleteTransaction = (transactionId: number) => {
+    const transaction = transactions.find(t => t.id === transactionId);
+    if (!transaction) return;
+
+    if (!confirm('Da li ste sigurni da želite da obrišete ovu transakciju?')) return;
+
+    // Ukloni transakciju iz liste
+    setTransactions(prev => prev.filter(t => t.id !== transactionId));
+
+    // Oporaviti stanje sefu u zavisnosti od tipa transakcije
+    if (transaction.type === 'add') {
+      setBalance(prev => prev - transaction.amountRsd);
+      setBalanceEur(prev => prev - transaction.amountEur);
+    } else if (transaction.type === 'subtract') {
+      setBalance(prev => prev + transaction.amountRsd);
+      setBalanceEur(prev => prev + transaction.amountEur);
+    } else if (transaction.type === 'loan_given') {
+      setBalance(prev => prev + transaction.amountRsd);
+      setBalanceEur(prev => prev + transaction.amountEur);
+      // Ukloni i povezanu pozajmicu
+      setLoans(prev => prev.filter(l => l.timestamp !== transaction.timestamp || l.description !== transaction.description));
+    } else if (transaction.type === 'loan_returned' || transaction.type === 'loan_partial') {
+      setBalance(prev => prev - transaction.amountRsd);
+      setBalanceEur(prev => prev - transaction.amountEur);
+      
+      // Za vraćene pozajmice treba biti pažljiv - ne možemo jednostavno vratiti stanje
+      alert('Oprez: Brisanje transakcija vraćanja pozajmica može poremetiti stanje. Preporučuje se backup pre brisanja.');
+    }
+  };
+
+  const deleteLoan = (loanId: number) => {
+    const loan = loans.find(l => l.id === loanId);
+    if (!loan) return;
+
+    if (!confirm(`Da li ste sigurni da želite da obrišete pozajmicu "${loan.description}"?`)) return;
+
+    // Ako je pozajmica aktivna, vrati novac u sef
+    if (loan.isActive) {
+      setBalance(prev => prev + loan.currentAmountRsd);
+      setBalanceEur(prev => prev + loan.currentAmountEur);
+    }
+
+    // Ukloni pozajmicu
+    setLoans(prev => prev.filter(l => l.id !== loanId));
+    
+    // Ukloni sve povezane transakcije
+    setTransactions(prev => prev.filter(t => 
+      !(t.type === 'loan_given' && t.description === loan.description && t.timestamp === loan.timestamp) &&
+      !(t.loanId === loanId)
+    ));
   };
 
   if (!isLoaded) {
@@ -461,13 +499,6 @@ export default function CashFlowApp() {
                     className="hidden"
                   />
                 </label>
-                
-                <button
-                  onClick={resetApp}
-                  className="text-sm bg-gray-100 hover:bg-gray-200 text-gray-600 px-3 py-1 rounded-lg transition-colors"
-                >
-                  Reset
-                </button>
               </div>
             </div>
             
@@ -654,6 +685,13 @@ export default function CashFlowApp() {
                         <ArrowLeft className="w-4 h-4" />
                         Sve
                       </button>
+                      <button
+                        onClick={() => deleteLoan(loan.id)}
+                        className="bg-red-600 hover:bg-red-700 text-white px-2 py-1 rounded text-sm flex items-center gap-1 transition-colors"
+                        title="Obriši pozajmicu"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -735,6 +773,14 @@ export default function CashFlowApp() {
                      transaction.type === 'subtract' || transaction.type === 'loan_given' ? '-' : ''}
                     {formatAmount(transaction)}
                   </div>
+                  
+                  <button
+                    onClick={() => deleteTransaction(transaction.id)}
+                    className="bg-red-600 hover:bg-red-700 text-white px-2 py-1 rounded text-sm flex items-center gap-1 transition-colors ml-3"
+                    title="Obriši transakciju"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
                 </div>
               ))}
             </div>

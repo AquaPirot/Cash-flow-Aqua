@@ -61,7 +61,7 @@ export default function CashFlowApp() {
         setTransactions(data.transactions || []);
         
         // Migracija starih pozajmica koje nemaju currentAmount polja
-        const migratedLoans = (data.loans || []).map((loan: any) => ({
+        const migratedLoans = (data.loans || []).map((loan: Partial<Loan> & { amountRsd?: number; amountEur?: number }) => ({
           ...loan,
           originalAmountRsd: loan.originalAmountRsd || loan.amountRsd || 0,
           originalAmountEur: loan.originalAmountEur || loan.amountEur || 0,
@@ -281,7 +281,7 @@ export default function CashFlowApp() {
           setTransactions(importedData.transactions || []);
           
           // Migracija pozajmica pri importu
-          const migratedLoans = (importedData.loans || []).map((loan: any) => ({
+          const migratedLoans = (importedData.loans || []).map((loan: Partial<Loan> & { amountRsd?: number; amountEur?: number }) => ({
             ...loan,
             originalAmountRsd: loan.originalAmountRsd || loan.amountRsd || 0,
             originalAmountEur: loan.originalAmountEur || loan.amountEur || 0,
